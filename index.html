@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Мини-Stockfish Шахматы</title>
+    <!-- Подключаем стили для шахматной доски -->
+    <link rel="stylesheet" href="https://cloudflare.com">
+    <style>
+        body {
+            font-family: 'Segoe UI', system-ui, sans-serif;
+            background: #202225;
+            color: #fff;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            margin: 0;
+        }
+        h1 { margin-bottom: 5px; color: #4caf50; font-size: 2rem; }
+        #board { width: 400px; max-width: 90vw; margin: 20px 0; box-shadow: 0 8px 24px rgba(0,0,0,0.6); }
+        .status-container { font-size: 1.2rem; min-height: 35px; text-align: center; font-weight: 500; }
+        button {
+            padding: 12px 24px;
+            font-size: 1rem;
+            background-color: #4caf50;
+            color: white;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-weight: bold;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.2);
+            transition: all 0.2s;
+        }
+        button:hover { background-color: #45a049; transform: translateY(-1px); }
+        button:active { transform: translateY(1px); }
+    </style>
+</head>
+<body>
+
+    <h1>Шахматный ИИ</h1>
+    <div class="status-container" id="status">Загрузка игры...</div>
+    
+    <div id="board"></div>
+    
+    <button id="resetBtn">Начать заново</button>
+
+    <!-- Подключаем библиотеки через CDN -->
+    <script src="https://jquery.com"></script>
+    <script src="https://cloudflare.com"></script>
+    <script src="https://cloudflare.com"></script>
+
+    <script>
+        var board = null;
+        var game = new Chess();
+        var statusEl = document.getElementById('status');
+
+        // Базовая стоимость фигур для ИИ
+        var PIECE_VALUES = { p: 100, n: 320, b: 330, r: 500, q: 900, k: 20000 };
+
+        // Оценка материала на доске
+        function evaluateBoard(boardState) {
+            var totalEvaluation = 0;
+            for (var i = 0; i < 8; i++) {
+                for (var j = 0; j < 8; j++) {
+                    var square = boardState[i][j];
+                    if (square) {
+                        var value = PIECE_VALUES[square.type];
+                        totalEvaluation += (square.color === 'w') ? value : -value;
+                    }
+                }
+            }
+            return totalEvaluation;
+        }
+
+        // Алгоритм Минимакс с Альфа-Бета отсечением
+        function alphaBeta(gameInstance, depth, alpha, beta, isMaximizing) {
+            if (depth === 0 || gameInstance.game_over()) {
+                return evaluateBoard(gameInstance.board());
+            }
+
+            var moves = gameInstance.moves();
+            
+            if (isMaximizing) {
+                var maxEval = -Infinity;
+                for (var i = 0; i < moves.length; i++) {
+                    gameInstance.move(moves[i]);
+                    var evaluation = alphaBeta(gameInstance, depth - 1, alpha, beta, false);
+                    gameInstance.undo();
+                    maxEval = Math.max(maxEval, evaluation);
+                    alpha = Math.max(alpha, evaluation);
+                    if (beta <= alpha) break;
+                }
+                return maxEval;
+            } else {
+                var minEval = Infinity;
+                for (var i = 0; i < moves.length; i++) {
+                    gameInstance.move(moves[i]);
+                    var evaluation = alphaBeta(gameInstance, depth - 1, alpha, beta, true);
+                    gameInstance.undo();
+                    minEval = Math.min(minEval, evaluation);
+                    beta = Math.min(beta, evaluation);
+                    if (beta <= alpha) break;
+                }
+                return minEval;
+            }
+        }
+
+        // Ход искусственного интеллекта (Черные)
+        function makeAIMove() {
+            var moves = game.moves();
+            if (game.game_over()) return;
+
+            var bestMove = null;
+            var bestValue = Infinity; 
+            
+            // Сортировка: проверяем взятия в первую очередь
+            moves.sort(function(a, b) {
+                return (b.indexOf('x') !== -1 ? 1 : 0) - (a.indexOf('x') !== -1 ? 1 : 0);
+            });
+
+            for (var i = 0; i < moves.length; i++) {
+                game.move(moves[i]);
+                var boardValue = alphaBeta(game, 2, -Infinity, Infinity, true);
+                game.undo();
+                
+                if (boardValue < bestValue) {
+                    bestValue = boardValue;
+                    bestMove = moves[i];
+                }
+            }
+
+            game.move(bestMove);
+            board.position(game.fen());
+            updateStatus();
+        }
+
+        // Правила перетаскивания фигур игроком
+        function onDragStart(source, piece, position, orientation) {
+            if (game.game_over()) return false;
+            // Игрок может двигать только белые фигуры
+            if (piece.search(/^b/) !== -1) return false;
+        }
+
+        function onDrop(source, target) {
+            // Проверяем ход игрока на легальность
+            var move = game.move({
+                from: source,
+                to: target,
+                promotion: 'q' // Автоматическое превращение пешки в ферзя
+            });
+
+            // Если ход нелегальный, возвращаем фигуру на место
+            if (move === null) return 'snapback';
+
+            updateStatus();
+            
+            // Если игра продолжается, через 250мс ходит ИИ
+            if (!game.game_over()) {
+                statusEl.innerHTML = 'ИИ думает...';
+                window.setTimeout(makeAIMove, 250);
+            }
+        }
+
+        function onSnapEnd() {
+            board.position(game.fen());
+        }
+
+        // Обновление интерфейса и статуса игры
+        function updateStatus() {
+            var statusText = '';
+            var moveColor = game.turn() === 'b' ? 'Черных' : 'Белых';
+
+            if (game.in_checkmate()) {
+                statusText = 'Мат! Игра окончена. Победили ' + (game.turn() === 'w' ? 'Черные' : 'Белые') + '.';
+            } else if (game.in_draw()) {
+                statusText = 'Ничья! Игра окончена.';
+            } else {
+                statusText = 'Ход ' + moveColor;
+                if (game.in_check()) {
+                    statusText += ' (Шах!)';
+                }
+            }
+            statusEl.innerHTML = statusText;
+        }
+
+        // Инициализация шахматной доски
+        var config = {
+            draggable: true,
+            position: 'start',
+            onDragStart: onDragStart,
+            onDrop: onDrop,
+            onSnapEnd: onSnapEnd,
+            pieceTheme: 'https://chessboardjs.com{piece}.png'
+        };
+        
+        board = Chessboard('board', config);
+        updateStatus();
+
+        // Обработка кнопки перезапуска
+        document.getElementById('resetBtn').addEventListener('click', function() {
+            game.reset();
+            board.start();
+            updateStatus();
+        });
+    </script>
+</body>
+</html>
